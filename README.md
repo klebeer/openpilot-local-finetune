@@ -29,7 +29,8 @@ No model weights or drive data are in this repository.
 | 3' | `replay_model.py` / `replay_loop.sh` / `replay_batch.py` | the same for single-file models (`driving_supercombo.onnx`) |
 | 4 | `stock_to_torch.py` | converts an ONNX model to PyTorch with the converters `onnx2torch` lacks |
 | 5 | `train_policy.py` | fine-tunes the policy on the frames you steered, anchored to the original everywhere else |
-| 6 | `compare_models.py` | lateral error of each model's plan against the real path at 1 s and 2 s, split by who steered and by street type |
+| 6 | `compare_models.py` | lateral error of each model's plan against the real path at 1 s and 2 s, split by who steered, by street type and at 80+ km/h |
+| 7 | `export_policy.py` | writes the fine-tuned weights back into the original policy ONNX, ready for the device's compiler |
 
 Every script documents its arguments in its docstring.
 
@@ -40,9 +41,10 @@ Every script documents its arguments in its docstring.
 - **Labels.** The labels follow `openpilot.distill`'s plan targets, in the device's own calibrated frame: lateral
   position, heading change and yaw rate up to 3.2 s. openpilot steers from the plan's heading and yaw rate, so all
   three are fitted.
-- **Which frames teach.** Only frames where you steered through the next 3 s. Frames where openpilot steered would
-  teach the model to repeat itself. Those frames only anchor the outputs to the original policy's, with extra weight
-  so its own driving does not change.
+- **Which frames teach.** Only frames where you steered through the next 3 s, at 70 km/h or slower. Frames where
+  openpilot steered would teach the model to repeat itself, and above 70 km/h a driver mostly steers to overtake or
+  avoid, not to hold a place in the lane. Both only anchor the outputs to the original policy's, with extra weight so
+  openpilot's own driving does not change.
 - **Which epoch is kept.** The one closest to your path on a validation set of whole drives, penalised for any loss
   of accuracy where openpilot steered.
 

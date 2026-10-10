@@ -27,6 +27,7 @@ T_IDXS = np.asarray(ModelConstants.T_IDXS)
 HORIZONS = (int(np.argmin(np.abs(T_IDXS - 1.0))), int(np.argmin(np.abs(T_IDXS - 2.0))))
 WHO_WINDOW_S = 3.0
 CLEAR_LINES = 0.5
+FAST_KPH = 80.0
 
 
 def log_timelines(rlog):
@@ -63,6 +64,7 @@ def main():
   ways = MapWays()
   err = defaultdict(list)       # (model, group) -> [abs error at horizons]
   bias = defaultdict(list)      # model -> signed offset at 2 s on two-way streets, driver steering
+  fast_bias = defaultdict(list)  # model -> signed offset at 2 s at FAST_KPH or faster, openpilot steering
   for seg in segments:
     name = os.path.basename(seg.rstrip("/"))
     if not os.path.exists(f"{seg}/localizer.safetensors"):
@@ -99,6 +101,10 @@ def main():
         pred = r["plan"][k][list(HORIZONS), 1]
         e = np.abs(pred - truth)
         err[(m, who, "all")].append(e)
+        if v * 3.6 >= FAST_KPH:
+          err[(m, who, f"{FAST_KPH:.0f}+ km/h")].append(e)
+          if who == "openpilot":
+            fast_bias[m].append(pred[1] - truth[1])
         if two_way:
           err[(m, who, "two-way" + ("" if clear else ", no clear lines"))].append(e)
           if who == "driver":
@@ -117,6 +123,11 @@ def main():
   for m in models:
     if bias[m]:
       b = np.array(bias[m])
+      print(f"    {m:10} n={len(b):5d}  median {np.median(b):+.2f} m, mean {b.mean():+.2f} m")
+  print(f"\nsigned offset at 2 s at {FAST_KPH:.0f}+ km/h while openpilot steered (positive: model further right than the car went):")
+  for m in models:
+    if fast_bias[m]:
+      b = np.array(fast_bias[m])
       print(f"    {m:10} n={len(b):5d}  median {np.median(b):+.2f} m, mean {b.mean():+.2f} m")
 
 

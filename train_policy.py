@@ -6,9 +6,10 @@ hidden states of the last 25 chain frames (4 frames apart, the current one last)
 Labels follow openpilot.distill's plan targets, built from the localizer but in the device's own calibrated frame (the
 frame the model saw): lateral position, heading change (yaw) and yaw rate at the plan's times up to LABEL_S. Steering
 reads yaw and yaw rate, so all three are fitted. They count on frames where you steered through the next WHO_WINDOW_S
-with the car moving. The loss is the L1 to your path, each quantity scaled by its spread, plus the L1 between every
+with the car moving at MAX_LABEL_KPH or slower; faster ones of yours are anchored like openpilot's. The loss is the L1 to your path, each quantity scaled by its spread, plus the L1 between every
 raw output and the original policy's: ANCHOR on all frames, ANCHOR + ANCHOR_OP where openpilot steered through the
-window, so what the labels do not cover stays as it was and openpilot's own driving least of all.
+window or you steered above MAX_LABEL_KPH, so what the labels do not cover stays as it was and openpilot's own
+driving least of all.
 
 Segments are read from $LOCROOT/data (default ~/.comma/locroot). Segments on the held-out list are never used. VAL_SHARE of the remaining drives (whole drives) picks the epoch: the
 lowest error to your path, plus OP_PENALTY times any error to the real path where openpilot steered beyond the
@@ -41,6 +42,7 @@ LABEL_S = 3.2
 N_LABEL = int(np.searchsorted(T_IDXS, LABEL_S))   # plan times 0 .. 3.16 s
 WHO_WINDOW_S = 3.0
 MIN_SPEED = 3.0
+MAX_LABEL_KPH = 70.0   # above this you mostly steer to overtake or avoid, not to hold your place in the lane
 HISTORY = 25
 FEATURES = 512
 PLAN_N, PLAN_W = 33, 15
@@ -50,7 +52,7 @@ ANCHOR_OP = 3.0
 OP_PENALTY = 10.0
 VAL_SHARE = 0.1
 EPOCHS, BATCH, LR = 10, 512, 1e-4
-NONE, YOURS, OPENPILOT = 0, 1, 2
+NONE, YOURS, OPENPILOT, FAST = 0, 1, 2, 3   # FAST: yours, above MAX_LABEL_KPH
 
 
 def log_timelines(rlog):
@@ -104,6 +106,8 @@ def segment_samples(seg_dir, replay_path):
         continue
       win = [x for x in lat if t <= x[0] <= t + WHO_WINDOW_S]
       who = NONE if not win else YOURS if not any(x[1] for x in win) else OPENPILOT if all(x[1] for x in win) else NONE
+      if who == YOURS and float(np.linalg.norm(states[fidx, 7:10])) * 3.6 > MAX_LABEL_KPH:
+        who = FAST
       if who != NONE:
         labels[k] = (who, targets(states, frame_t, fidx, at(calib, t)))
   return hidden, labels
@@ -193,7 +197,8 @@ def main(model_dir, replay_dirs, held_out_list, out_dir):
   val_drives = set(rng.choice(drives, max(1, int(len(drives) * VAL_SHARE)), replace=False))
   train = Data([p for s, p in runs if s not in held and s.split("--")[0] not in val_drives])
   val = Data([p for s, p in runs if s not in held and s.split("--")[0] in val_drives])
-  print(f"train {len(train)} samples ({int(train.labelled.sum())} yours, {int((train.who == OPENPILOT).sum())} openpilot), "
+  print(f"train {len(train)} samples ({int(train.labelled.sum())} yours, {int((train.who == FAST).sum())} yours above "
+        f"{MAX_LABEL_KPH:.0f} km/h, {int((train.who == OPENPILOT).sum())} openpilot), "
         f"val {len(val)} ({int(val.labelled.sum())} yours, {int((val.who == OPENPILOT).sum())} openpilot, drives {sorted(map(str, val_drives))}), "
         f"held out {len(held & set(segs))} segments, from {len(replay_dirs)} replay dirs", flush=True)
 
@@ -220,7 +225,7 @@ def main(model_dir, replay_dirs, held_out_list, out_dir):
       out = run(model, feats)
       with torch.no_grad():
         ref = run(original, feats)
-      weight = ANCHOR + ANCHOR_OP * (mask == OPENPILOT).float()
+      weight = ANCHOR + ANCHOR_OP * ((mask == OPENPILOT) | (mask == FAST)).float()
       anchor = ((out - ref).abs().mean(dim=1) * weight).mean()
       mask = mask == YOURS
       fit = ((lateral(out)[mask] - labels[mask]).abs() / sc).mean() if mask.any() else torch.zeros((), device=device)
